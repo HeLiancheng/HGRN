@@ -3,16 +3,14 @@ import time
 import os
 import logging
 import tensorflow.compat.v1 as tf
-import numpy as np
+
 import sys
 print(sys.path)
 from ..data.sparsegraph import SparseGraph
 from .model import Model
 from ..preprocessing import gen_splits, gen_seeds
 from .earlystopping import EarlyStopping, stopping_args
-from sklearn.manifold import TSNE
-import matplotlib.pyplot as plt
-import uuid
+
 
 def train_model(
         name: str, model_class: Type[Model], graph: SparseGraph, build_args: dict,
@@ -32,7 +30,7 @@ def train_model(
     logging.log(22, f"Tensorflow seed: {tf_seed}")
     sess = tf.Session(
             config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True)))
-    model = model_class(graph.attr_matrix, labels, sess)
+    model = model_class(graph.attr_matrix, graph.adj_matrix, labels, sess)
     model.build_model(**build_args)
 
     train_inputs = {
@@ -75,8 +73,8 @@ def train_model(
                 [model.train_op, model.loss],
                 feed_dict=train_inputs)
 
-        train_acc, train_str = sess.run(
-                [model.accuracy, model.summary], feed_dict=train_inference_inputs)
+        newAdj, train_acc, train_str = sess.run(
+                [model.gcn_adj, model.accuracy, model.summary], feed_dict=train_inference_inputs)
         if save_result:
             train_writer.add_summary(train_str, step)
         stopping_loss, stopping_acc, stopping_str = sess.run(
@@ -96,6 +94,7 @@ def train_model(
                     "early stopping loss = {:.2f}, early stopping acc = {:.1f} ({:.3f} sec)"
                     .format(step, train_loss, train_acc * 100,
                             stopping_loss, stopping_acc * 100, duration))
+            print(newAdj)
         if len(early_stopping.stop_vars) > 0:
             stop_vars = sess.run(
                     early_stopping.stop_vars, feed_dict=stopping_inputs)
@@ -110,11 +109,11 @@ def train_model(
         logging.log(22, "Last step: {}, best step: {} ({:.3f} sec)"
                     .format(step, early_stopping.best_step, runtime))
         model.set_vars(early_stopping.best_trainables)
+        print(model.gcn_adj)
 
     train_accuracy, train_f1_score = sess.run(
             [model.accuracy, model.f1_score],
             feed_dict=train_inputs)
-
     stopping_accuracy, stopping_f1_score = sess.run(
             [model.accuracy, model.f1_score],
             feed_dict=stopping_inputs)
@@ -150,21 +149,5 @@ def train_model(
     result['valtest'] = {'accuracy': valtest_accuracy, 'f1_score': valtest_f1_score}
     result['runtime'] = runtime
     result['runtime_perepoch'] = runtime_perepoch
-    res=model._return_feature(valtest_idx)
-
     sess.close()
-    tsne = TSNE(early_exaggeration=20)
-    out = tsne.fit_transform(res)
-    l=len(labels)
-    mask = np.zeros(l,dtype=np.bool)
-    mask[valtest_idx] = 1
-    fig = plt.figure()
-    for i in range(7):
-        indice = labels[mask] == i
-        x, y = out[indice].T
-        plt.scatter(x, y)
-    plt.axis('off')
-    plt.savefig('tsne_mlp.pdf',bbox_inches='tight')
-    plt.savefig('tsne_mlp.eps', bbox_inches='tight')
-    plt.show()
     return result

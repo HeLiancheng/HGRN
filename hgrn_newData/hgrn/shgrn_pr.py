@@ -3,12 +3,12 @@ import tensorflow.compat.v1 as tf
 from .model import Model
 
 from .utils import mixed_dropout
-from .highOrderInfo import InfoPropagation
+from .highOrderInfo import InfoPropagation_pr
 
 sparse_dot = tf.sparse_tensor_dense_matmul
 
 
-class SHGRN(Model):
+class SHGRN_PR(Model):
 
     def _build_layer(
             self, X: Union[tf.Tensor, tf.SparseTensor], out_size: int,
@@ -50,7 +50,7 @@ class SHGRN(Model):
 
 
     def build_model(
-            self, propagation: InfoPropagation,
+            self, propagation: InfoPropagation_pr,
             hiddenunits: List[int] = [16], reg_lambda: float = 1e-3, learning_rate: float = 0.01,
             keep_prob: float = 0.5, keep_feature: float = 0.6, keep_prob_layers: float = 0.8,
             activation_fn: Callable[[tf.Tensor, str], tf.Tensor] = tf.nn.relu):
@@ -63,31 +63,50 @@ class SHGRN(Model):
         keep_feature = tf.maximum(tf.cast(~self.isTrain, tf.float32), keep_feature)
         keep_prob_layers = tf.maximum(tf.cast(~self.isTrain, tf.float32), keep_prob_layers)
 
-        self.Zs = [self.attr_mat_norm]
-        # Hidden layers
-        for i, hiddenunit in enumerate(self.hiddenunits):
-            with tf.variable_scope(f'layer_{i}'):
-                first_layer = i == 0
-                keep_prob_current = keep_feature if first_layer else 1.
-                self.Zs.append(self._build_layer(
-                    self.Zs[-1], hiddenunit,
-                    activation=activation_fn,
-                    regularize=first_layer,
-                    keep_prob=keep_prob_current))
-
-        # Last layer
-        with tf.variable_scope(f'layer_{len(self.hiddenunits)}'):
-            self.logits_local = self._build_layer(
-                self.Zs[-1], self.nclasses,
-                activation=lambda x: x,
-                regularize=False, keep_prob=keep_feature)
+        self.attr_mat_norm = tf.sparse_tensor_to_dense(self.attr_mat_norm)
 
         # Propagation
-        self.propa = self.propagation.build_model(self.logits_local, self.gcn_adj, keep_prob)
+        self.propa = self.propagation.build_model(self.attr_mat_norm, self.gcn_adj, keep_prob)
+        
+        Zs = []
+        # Hidden layers
+        with tf.variable_scope(f'layer_0'):
+            W1 = tf.get_variable(
+                'weights',
+                [self.nfeatures, hiddenunits[0]],
+                dtype=tf.float32,
+                initializer=tf.glorot_uniform_initializer())
+            self.reg_vars.append(W1)
+
+            for layer in self.propa:
+                X_drop = mixed_dropout(layer, keep_feature)
+
+                l = layer @ W1
+                l = activation_fn(l)
+                Zs.append(l)
+
+
+
+        lastZs = []
+        # Last layer
+        with tf.variable_scope(f'layer_last'):
+            W2 = tf.get_variable(
+                'weights',
+                [hiddenunits[0], self.nclasses],
+                dtype=tf.float32,
+                initializer=tf.glorot_uniform_initializer())
+
+            for layer in Zs:
+                X_drop = mixed_dropout(layer, keep_feature)
+                l = layer @ W2
+                lastZs.append(l)
+
+        propa_result = tf.stack(lastZs, axis=1)
+
         # layerAttention
         with tf.variable_scope(f'layer_attention'):
             self.logits = self._build_attn(
-                self.propa, self.propa.get_shape()[2], keep_prob_layers)
+                propa_result, propa_result.get_shape()[2], keep_prob_layers)
 
 
         self._build_loss(reg_lambda)

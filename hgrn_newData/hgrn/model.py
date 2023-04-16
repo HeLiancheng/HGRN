@@ -15,7 +15,6 @@ class Model:
             labels: np.ndarray, sess: tf.Session):
         attr_mat_norm = normalize_attributes(attr_matrix)
         self.gcn_adj = sparse_matrix_to_tensor(calc_A_hat(adj))
-        
         self.attr_mat_norm = matrix_to_tensor(attr_mat_norm)
 
         self.labels_np = labels
